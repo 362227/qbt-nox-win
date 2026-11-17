@@ -1,41 +1,60 @@
-name: build-qbt-nox-windows
+name: build-qb-static
 on: workflow_dispatch
+
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
-    defaults:
-      run:
-        shell: msys2 {0}
+    timeout-minutes: 340
+    env:
+      QBT_TAG: release-5.1.2
     steps:
-      - uses: msys2/setup-msys2@v2
+      - uses: ilammy/msvc-dev-cmd@v1
         with:
-          msystem: MINGW64
-          update: true
-          install: >-
-            git
-            mingw-w64-x86_64-toolchain
-            mingw-w64-x86_64-cmake
-            mingw-w64-x86_64-ninja
-            mingw-w64-x86_64-qt6-base
-            mingw-w64-x86_64-qt6-tools
-            mingw-w64-x86_64-qt6-svg
-            mingw-w64-x86_64-boost
-            mingw-w64-x86_64-openssl
-            mingw-w64-x86_64-zlib
-            mingw-w64-x86_64-libtorrent-rasterbar
-      - name: Clone
-        run: git clone --depth 1 --branch release-5.1.2 https://github.com/qbittorrent/qBittorrent.git
+          arch: x64
+
+      - name: Get vcpkg
+        shell: pwsh
+        run: |
+          git clone --depth 1 https://github.com/microsoft/vcpkg.git C:\vcpkg2
+          C:\vcpkg2\bootstrap-vcpkg.bat -disableMetrics
+
+      - name: Install static deps
+        shell: pwsh
+        run: |
+          C:\vcpkg2\vcpkg.exe install --triplet x64-windows-static --clean-after-build qtbase qttools libtorrent boost-circular-buffer boost-stacktrace openssl zlib
+
+      - name: Clone qBittorrent
+        shell: pwsh
+        run: git clone --depth 1 --branch $env:QBT_TAG https://github.com/qbittorrent/qBittorrent.git
+
       - name: Build
+        shell: pwsh
         run: |
           cd qBittorrent
-          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DGUI=OFF -DQT6=ON
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg2/scripts/buildsystems/vcpkg.cmake `
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static `
+            -DBUILD_SHARED_LIBS=OFF `
+            -Dstatic_runtime=ON `
+            -DMSVC_RUNTIME_DYNAMIC=OFF `
+            -DGUI=OFF `
+            -DQT6=ON `
+            -Ddeprecated-functions=OFF
           cmake --build build
-      - name: Collect DLLs
+
+      - name: Check result
+        shell: pwsh
         run: |
-          mkdir -p out
-          cp qBittorrent/build/qbittorrent-nox.exe out/
-          ldd out/qbittorrent-nox.exe | grep -i /mingw64 | awk '{print $3}' | xargs -I{} cp {} out/
-      - uses: actions/upload-artifact@v4
+          Copy-Item qBittorrent/build/qbittorrent-nox.exe qb.exe
+          (Get-Item qb.exe).Length
+          dumpbin /dependents qb.exe
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: qbittorrent-nox-win64
-          path: out
+          tag_name: v1
+          name: v1
+          files: qb.exe
